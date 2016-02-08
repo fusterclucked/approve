@@ -1,0 +1,118 @@
+#! /bin/bash
+
+AEC() { echo $'\x1b'[$1m; }
+
+RESET=$(AEC 0)
+
+BOLD=$(AEC 1)
+UNDERLINE=$(AEC 4)
+
+RED=$(AEC 31)
+GREEN=$(AEC 32)
+CYAN=$(AEC 36)
+
+RED_BGB=$(AEC 101)
+GREEN_BGB=$(AEC 102)
+
+TT() { echo $@${RESET}; }
+
+WIDTH=$(tput cols)
+
+expect() {
+	if [[ -z $2 ]]; then
+		expected="$2"
+	else
+		expected="$2\n"
+	fi
+
+	printf %b "$expected" | diff -ay -W "$WIDTH" - "$1" >DIFF
+	status=$?
+
+	if ((0 != $status)); then
+		echo $(TT "${UNDERLINE}$1") >>REPORT
+
+		if type -t wdiff >/dev/null; then
+			printf %b "$expected" | wdiff \
+				-w $RED_BGB -x $RESET \
+				-y $GREEN_BGB -z $RESET \
+				- "$1" >DIFF \
+			>>REPORT
+		else
+			cat DIFF >>REPORT
+		fi
+	fi
+
+	return $status
+}
+
+RUNDIR=$(mktemp -d "/tmp/approve.XXXXXXXXXX")
+WORKDIR="$RUNDIR/WORK"
+
+When() {
+	rm -rf "$WORKDIR"
+	mkdir -p "$WORKDIR"
+	cd "$WORKDIR"
+	echo $@ >../cmdline
+	eval $@ >../stdout 2>../stderr
+	echo $? >../status
+	dir -ARF >../lscwd
+}
+
+failed=0
+passed=0
+
+Then() {
+	cd "$RUNDIR"
+	rm -f REPORT
+
+	expect status "$1"
+	success=$((0 == $?))
+
+	expect stdout "$2"
+	success=$(($success && 0 == $?))
+
+	expect stderr "$3"
+	success=$(($success && 0 == $?))
+
+	expect lscwd "$4"
+	success=$(($success && 0 == $?))
+
+	if (($success)); then
+		((passed += 1))
+		PREFIX=$(TT ${GREEN}✓)
+	else
+		((failed += 1))
+		PREFIX=$(TT ${BOLD}${RED}✖)
+	fi
+
+	echo $PREFIX $(TT ${CYAN}$(cat cmdline))
+	cat REPORT >&2 2>/dev/null
+
+	((!$success)) && echo
+}
+
+TESTDIR="$PWD/test"
+
+for SUITE in $(find "$TESTDIR" -type f -name '*.sh' -print); do
+	FILENAME=${SUITE##*/}
+
+	echo $(TT ${BOLD}${FILENAME%.*}:)
+
+	. <( cat "$SUITE" | sed -r \
+		-e 's/^([^#]*)\$<</\1"\$\(cat <<EOM/g' \
+		-e 's/^([^#]*)\$>>/\1EOM\n)"/g' )
+done
+
+rm -rf "$RUNDIR"
+
+echo $(TT ${BOLD}Summary:)
+
+if ((failed == 0)); then
+	echo "  Failed: $(TT ${BOLD}${GREEN}$failed)"
+	echo "  $(TT ${GREEN}Passed: ${BOLD}$passed)"
+else
+	echo "  $(TT ${RED}Failed: ${BOLD}$failed)"
+	echo "  Passed: $(TT ${BOLD}${RED}$passed)"
+fi
+
+exit $((0 != $failed))
